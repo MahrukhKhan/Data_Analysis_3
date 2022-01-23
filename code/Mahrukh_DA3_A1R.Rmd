@@ -1,0 +1,370 @@
+---
+title: "DA3 - Assignment 1 - Mahrukh Khan"
+geometry: "left=1cm,right=1cm,top=0.5cm,bottom=1.5cm"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(modelsummary)
+library(fixest)
+library(caret)
+library(grid)
+library(gridExtra)
+library(kableExtra)
+
+data <- read_csv('https://raw.githubusercontent.com/MahrukhKhan/Data_Analysis_3/main/data/morg-2014-emp.csv')
+```
+
+
+```{r, include=FALSE}
+
+##################### DATA CLEANING ###################################################################
+#Community and Social Services Occupation
+data <-  filter( data, occ2012 == 2000 | occ2012 == 2010 | occ2012 == 2015 |  
+                 occ2012 == 2016 | occ2012 == 2025 | occ2012 == 2040 | 
+                 occ2012 == 2050 | occ2012 == 2060)
+
+#Selecting variables
+data <- select(data, occ2012, age, race, sex, grade92, earnwke, uhours, class)
+#Check for missing values
+sum(is.na(data))
+
+#Checking frequency by race
+datasummary( as.factor(race) ~ N + Percent() , data = data)
+
+#Keep white and black
+data <- data %>%  filter(race==1 | race == 2) %>% 
+        mutate( White = ifelse( race==1,1,0))
+
+
+#Checking frequency by class
+datasummary( as.factor(class) ~ N + Percent() , data = data)
+data <- data %>%  filter(class=='Government - Local' | class=='Government - State' | class=='Private, For Profit' | 
+                          class=='Private, Nonprofit')  %>%
+        mutate( GOV = ifelse( class=='Government - State' | class=='Government - Statee', 1,0),
+                PP = ifelse(class=='Private, For Profit',1,0),
+                PNP = ifelse(class=='Private, Nonprofit', 1, 0))
+
+
+#Checking frequency by sex
+datasummary(as.factor(sex) ~ N + Percent(), data=data)
+
+#Checking frequency by education
+datasummary(as.factor(grade92) ~ N + Percent(), data=data)
+
+#Keep 44 (34%), 43 (36%), 40 (10%), 39 (7%)
+data <- data %>%  filter(grade92==44 | grade92 == 43 | grade92 ==40 | grade92==39) %>% rename(educ=grade92) %>%
+  mutate( HC = ifelse( educ == 39 | educ==40, 1,0),
+          BA = ifelse( educ == 43, 1, 0),
+          MA = ifelse( educ == 44, 1, 0))
+
+
+#gender
+datasummary(as.factor(sex) ~ N + Percent(), data=data)
+data$female <- ifelse(data$sex == 1, 0, 1)
+
+# age: quadratic, cubic
+data <- data %>% 
+  mutate(agesq = age^2,
+         agecu = age^3)
+
+
+
+# wage
+data <- data %>%  mutate(wage=round(earnwke/uhours, 2)) 
+
+data <- data %>% filter(!(wage > 100 | wage<=1.00))
+
+#Log wage
+data <- data %>% mutate(lnw=log(wage))
+############################################## Graphs ######################################################
+
+data_sum <- datasummary( age + female + HC + MA + BA + GOV + PP + PNP + White + wage ~
+               Mean + Median + Min + Max + P25 + P75 + N , data = data )
+
+#Histogram of outcome variable `wage`
+x <- ggplot(data=data, aes(wage)) + 
+       geom_histogram(aes(y = (..count..)/sum(..count..)), fill = 'darkseagreen4', color = 'black', 
+                     size = 0.25, alpha = 0.8, bins = 30) + 
+       labs(title='Distribution of Wage', x='Earnings Per Hour (US Dollars)', y='Percent') + 
+       expand_limits(x = 0.01, y = 0.01) +
+       scale_y_continuous(expand = c(0.01,0.01),labels = scales::percent_format(accuracy = 1)) +
+       scale_x_continuous(expand = c(0.01,0.01),breaks = seq(0,150, 10)) +
+       theme_bw() 
+
+
+#Taking log
+
+y <- ggplot(data=data, aes(lnw)) + 
+  geom_histogram(aes(y = (..count..)/sum(..count..)), fill = 'darkseagreen4', color = 'black', 
+                 size = 0.25, alpha = 0.8, bins = 60) + 
+  labs(title='Distribution of Log Wage', x='Log of Wage', y='Percent') +
+  scale_y_continuous(expand = c(0.01,0.01),labels = scales::percent_format(accuracy = 1)) +
+  scale_x_continuous(breaks = seq(-8,5, 1)) +
+  theme_bw()
+
+# REGRESSION ANALYSIS I. - Predicting Price
+#
+
+# lowess with age
+a <- ggplot(data = data, aes(x=age, y=lnw)) +
+  geom_point( color = 'darkseagreen', size = 2,  shape = 16, alpha = 0.5, show.legend=F, na.rm = TRUE) + 
+  geom_smooth(method="loess", se=F, colour='red', size=1, span=0.9) +
+  labs(title='Lowess with Age', x = "Age (years)",y = "Log Wage") +
+  theme_bw() +
+  expand_limits(x = 0.01, y = 0.01) +
+  scale_y_continuous(expand = c(0.01,0.01), limits = c(0,6)) +
+  scale_x_continuous(expand = c(0.01,0.01), limits = c(10,70))
+
+
+
+# Lowess vs. square specification with age
+
+b <- ggplot(data = data, aes(x=age,y=lnw)) +
+  geom_smooth( aes(colour='red'), method="loess", formula = y ~ x,se=F, size=1) +
+  geom_smooth( aes(colour='blue'), method="lm", formula = y ~ poly(x,2) , se=F, size=1) +
+  geom_point( aes( y = lnw ) , color = 'darkseagreen', size = 1,  shape = 16, alpha = 0.8, show.legend=F, na.rm = TRUE) + 
+  labs(title='Lowess with Age and Age Square', x = "Age (years)",y = "Log  Wage ") +
+  scale_color_manual(name="", values=c('red','blue'),labels=c("Lowess in age","Quadratic in age")) +
+  theme_bw() +
+  scale_y_continuous(expand = c(0.01,0.01), limits=c (0 ,6)) +
+  scale_x_continuous(expand = c(0.01,0.01)) +
+  theme(legend.position = c(0.7,0.7),
+        legend.direction = "horizontal",
+        legend.background = element_blank(),
+        legend.box.background = element_rect(color = "white"))
+
+#Lowess vs. square specification with age
+
+c <- ggplot(data = data, aes(x=age,y=lnw)) +
+  geom_smooth( aes(colour='red'), method="loess", formula = y ~ x,se=F, size=1) +
+  geom_smooth( aes(colour='blue'), method="lm", formula = y ~ poly(x,3) , se=F, size=1) +
+  geom_point( aes( y = lnw ) , color = 'darkseagreen', size = 1,  shape = 16, alpha = 0.8, show.legend=F, na.rm = TRUE) + 
+  labs(title='Lowess with Age and Age Cube', x = "Age (years)",y = "Log Wage ") +
+  scale_color_manual(name="", values=c('red','blue'),labels=c("Lowess in age","Cubic in age")) +
+  theme_bw() +
+  scale_y_continuous(expand = c(0.01,0.01), limits=c (0 ,6)) +
+  scale_x_continuous(expand = c(0.01,0.01)) +
+  theme(legend.position = c(0.7,0.7),
+        legend.direction = "horizontal",
+        legend.background = element_blank(),
+        legend.box.background = element_rect(color = "white"))
+
+##### Variables Distribution ######
+#age
+
+d <- ggplot(data=data, aes(age)) + 
+  geom_histogram(aes(y = (..count..)/sum(..count..)), fill = 'darkseagreen4', color = 'black', 
+                 size = 0.25, alpha = 0.8, bins = 30) + 
+  labs(title='Distribution of Age', x='Age (years)', y='Percent') + 
+  scale_y_continuous(expand = c(0.01,0.01),labels = scales::percent_format(accuracy = 1)) +
+  scale_x_continuous(expand = c(0.01,0.01),breaks = seq(15,70, 5)) +
+  theme_bw()
+
+
+#Race
+
+e <- ggplot(data=data, aes(factor(race))) + 
+  geom_histogram(aes(y = (..count..)/sum(..count..)), fill = 'darkseagreen4', color = 'black', 
+                 size = 0.25, alpha = 0.8, stat = 'count') + 
+  labs(title='Distribution of Race', x='Race', y='Percent') + 
+  scale_y_continuous(expand = c(0.01,0.01),labels = scales::percent_format(accuracy = 1)) +
+  scale_x_discrete(labels = c('White','Black')) +
+  theme_bw()
+
+
+#Female
+
+
+f <- ggplot(data=data, aes(factor(female))) + 
+  geom_histogram(aes(y = (..count..)/sum(..count..)), fill = 'darkseagreen4', color = 'black', 
+                 size = 0.25, alpha = 0.8, stat='count') + 
+  labs(title='Distribution of Gender', x='Gender', y='Percent') + 
+  scale_y_continuous(expand = c(0.01,0.01),labels = scales::percent_format(accuracy = 1)) +
+  scale_x_discrete(labels = c('Male','Female')) +
+  theme_bw()
+
+
+#Education 44(Master's) 43(Bachelors) 40(Some College but no degree) 39(highschool)
+
+g <- ggplot(data=data, aes(factor(educ))) + 
+  geom_histogram(aes(y = (..count..)/sum(..count..)), fill = 'darkseagreen4', color = 'black', 
+                 size = 0.25, alpha = 0.8, stat='count') + 
+  labs(title='Distribution of Education', x='Education', y='Percent') + 
+  scale_y_continuous(expand = c(0.01,0.01),labels = scales::percent_format(accuracy = 1)) +
+  scale_x_discrete(labels = c('High School',  'College', "Bachelor's","Master's" )) +
+  theme_bw()
+
+#Job Type
+
+h <- ggplot(data=data, aes(factor(class))) + 
+  geom_histogram(aes(y = (..count..)/sum(..count..)), fill = 'darkseagreen4', color = 'black', 
+                 size = 0.25, alpha = 0.8, stat='count') + 
+  labs(title='Distribution of Job Sector', x='Job Sector', y='Percent') + 
+  scale_y_continuous(expand = c(0.01,0.01),labels = scales::percent_format(accuracy = 1)) +
+  scale_x_discrete(labels = c('Local Gov', "State Gov",'Priv Non Profit','Priv Profit' )) +
+  theme_bw()
+
+
+
+
+
+
+######################################### REGRESSION  #######################################################
+
+
+model1 <- as.formula(lnw ~ White)
+model2 <- as.formula(lnw ~ White + age + agesq)
+model3 <- as.formula(lnw ~ White + age + agesq + female + BA + MA)
+model4 <- as.formula(lnw ~  White + age + agesq + agecu + female + BA + MA + PP + PNP + White*MA + White*BA)
+
+
+# Running simple OLS
+reg1 <- feols(model1, data=data, vcov = 'hetero')
+reg2 <- feols(model2, data=data, vcov = 'hetero')
+reg3 <- feols(model3, data=data, vcov = 'hetero')
+reg4 <- feols(model4, data=data, vcov = 'hetero')
+
+
+
+# evaluation of the models: using all the sample
+fitstat_register("k", function(x){length( x$coefficients ) - 1}, "No. Variables")
+full_sample <- etable( reg1 , reg2 , reg3 , reg4, fitstat = c('aic','bic','rmse','r2','n','k') )
+
+# Cross-validation for better evaluation of predictive performance
+
+k <- 4
+
+# We use the 'train' function which allows many type of model training -> use cross-validation
+set.seed(1234)
+cv1 <- train(model1, data, method = "lm", trControl = trainControl(method = "cv", number = k))
+set.seed(1234)
+cv2 <- train(model2, data, method = "lm", trControl = trainControl(method = "cv", number = k))
+set.seed(1234)
+cv3 <- train(model3, data, method = "lm", trControl = trainControl(method = "cv", number = k))
+set.seed(1234)
+cv4 <- train(model4, data, method = "lm", trControl = trainControl(method = "cv", number = k))
+
+
+# Calculate RMSE for each fold and the average RMSE as well
+cv <- c("cv1", "cv2", "cv3", "cv4")
+rmse_cv <- c()
+
+
+for(i in 1:length(cv)){
+  rmse_cv[i] <- sqrt((get(cv[i])$resample[[1]][1]^2 +
+                        get(cv[i])$resample[[1]][2]^2 +
+                        get(cv[i])$resample[[1]][3]^2 +
+                        get(cv[i])$resample[[1]][4]^2)/4)
+}
+
+
+# summarize results
+cv_mat <- data.frame(rbind(cv1$resample[4], "Average"),
+                     rbind(cv1$resample[1], rmse_cv[1]),
+                     rbind(cv2$resample[1], rmse_cv[2]),
+                     rbind(cv3$resample[1], rmse_cv[3]),
+                     rbind(cv4$resample[1], rmse_cv[4])
+)
+
+colnames(cv_mat)<-c("Resample","Model1", "Model2", "Model3", "Model4")
+
+m_comp <- c()
+models <- c("reg1", "reg2", "reg3", "reg4")
+for( i in 1 : length(cv) ){
+  m_comp[ i ] <- length( get( models[i] )$coefficient  - 1 ) 
+}
+
+m_comp <- tibble( model = models , 
+                  complexity = m_comp,
+                  RMSE = rmse_cv )
+
+i <- ggplot( m_comp , aes( x = complexity , y = RMSE ) ) +
+  geom_point(color='red',size=2) +
+  geom_line(color='darkseagreen4',size=0.5)+
+  labs(x='Number of explanatory variables',y='Averaged RMSE',
+       title='Prediction performance and model compexity') +
+  theme_bw()
+
+```
+
+### Introduction
+
+This assignment uses cps-earnings dataset. It builds predictive models using linear regressions on target variable, earnings per hour, for the Community and Social Services Occupation. It will compare model performance by analyzing the relationship between model complexity and performance by using metrics such as RMSE and BIC in the full sample and k-fold-cross-validated RMSE. 
+
+### Choice of Predictors
+I chose demographic variables such as gender, age, race, education level and job sector. Due to higher female workers, community and social services occupation has been considered a gendered profession. Despite female dominance, the wage gap could potentially be a prevalent problem Also, traditionally, wages in public and private sector have been different. In addition, race discrimination can impact wages earned per hour. Another demographic variable is age which reflects one's experience and position in the work field, being positively associated with wage. Lastly, holding a higher degree can escalate job position in return boosting wage.  
+
+### Models (Target Variable: Log of earnings per hour)
+Model1: *race*;  
+Model2: *race, age and age squared*;  
+Model3: *race, age, age squared, gender and education level*;  
+Model4: *race, age, age squared, age cube, gender, education level, job sector, interaction term of race & education level, and interaction term of race & gender*.  
+
+### Relationship between model complexity and performance                                                                         
+
+There is a total of 2,245 observations and, our regression models get more complex with an addition of new variables, the most complex model includes interaction terms. The best predictor model is selected by first comparing the BIC and RMSE values in the full sample followed by k-fold-cross-validation with k set at 5. Both approaches indicate that Model 3 and Model 4 can potentially be chosen as best predictor models. Both models have the lowest BIC, 3049 and 3055, and lowest RMSE, 0.471 and 0.467, in the full sample, respectively. They also have the lowest average cross-validated RMSE being 0.480 and 0.475, with a similar variation amongst the folds. Overall, Model 3 is the less complex model of the two. It has similar RMSE values that show lower prediction error and the lowest BIC which discourages over fitting. In conclusion, Model 3 is a better predictor model. *Please see Figure 6 and Figure 7 in the Appendix.*
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.height= 2, fig.width= 4, fig.align='center'}
+i
+```
+A smaller averaged RMSE signals to a better prediction performance of the model. Initially, the drop in average RMSE is greater as more coefficients are added, but it almost flattens between Model 3 and Model 4. After a certain point the average RMSE will start increasing due to the growth in model complexity. Too many variables tend to over fit the original data, hence making it a bad predictor for the general pattern or population. 
+
+
+
+\newpage
+
+# Appendix
+
+## Data Cleaning, Manipulation and EDA
+
+- Earnings per hour was set between 1 and 100 dollars. 
+- The frequency distribution for categorical variables was used to combine or keep relevant categories. Relevant categories kept can be seen in   Figure 1.
+- All variables' distributions were made for a better understanding of the data. Please see figure 4. 
+- Functional forms of continuous variable, age, were explored using the lowess curve to analyze its association with the target variable. Please   see figure 5. 
+
+## Figure 1: Variable Description 
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+var_data <- read_csv('https://raw.githubusercontent.com/MahrukhKhan/Data_Analysis_3/main/data/DA3-Assignment-Variables.csv')
+kable(var_data, format="latex", booktabs=TRUE) %>% kable_styling(latex_options = c('striped','hold_position',"scale_down"), font_size = 4, full_width=F)
+```
+
+## Figure 2: Distribution of Earnings Per Hour
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.height=4, fig.align='center', fig.width= 6}
+grid.arrange(x,y,nrow=1)
+```
+
+\newpage
+
+## Figure 3: Distribution of Variables
+```{r,echo=FALSE, warning=FALSE, message=FALSE,  fig.width=8}
+grid.arrange(d,e,f, nrow=1)
+
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.width=8}
+grid.arrange(g,h, nrow=1)
+```
+
+## Figure 4: Association of age and its functional forms with hourly wage
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.height= 10}
+grid.arrange(a,b,c)
+```
+
+
+## Figure 5: RMSE AND BIC for full sample
+
+```{r, echo=FALSE}
+kable(full_sample, format="latex", booktabs=TRUE) %>% kable_styling(latex_options = c('hold_position',"scale_down"), font_size = 8, full_width=F)
+```
+
+## Figure 6: K Fold Cross Validation
+```{r, echo=FALSE, fig.width=3}
+kable(cv_mat, format="latex", booktabs=TRUE) %>% kable_styling(latex_options = c('striped', 'hold_position',"scale_down"), font_size = 2)
+
+```
+
+
