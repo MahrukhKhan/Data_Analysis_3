@@ -1,5 +1,5 @@
 ﻿Variables Name,Description
-Age,Meased in years for each individual. 
+Age,Measured in years for each individual. 
 Female,Takes the value of 1 if individual is female and 0 if male. 
 HC,Takes the value of 1 if individual graduated from High School or College and 0  otherwise. 
 MA,Takes the value of 1 if individual graduated with a Master's degree and 0  otherwise. 
