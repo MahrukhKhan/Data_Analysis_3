@@ -87,11 +87,11 @@ data_sum <- datasummary( age + female + HC + MA + BA + GOV + PP + PNP + White + 
 x <- ggplot(data=data, aes(wage)) + 
        geom_histogram(aes(y = (..count..)/sum(..count..)), fill = 'darkseagreen4', color = 'black', 
                      size = 0.25, alpha = 0.8, bins = 30) + 
-       labs(title='Distribution of Wage', x='Earnings Per Hour (US Dollars)', y='Percent') + 
+       labs(title='Distribution of Hourly Wage', x='Earnings Per Hour (US Dollars)', y='Percent') + 
        expand_limits(x = 0.01, y = 0.01) +
-       scale_y_continuous(expand = c(0.01,0.01),labels = scales::percent_format(accuracy = 1)) +
+       scale_y_continuous(expand = c(0.001,0.001),labels = scales::percent_format(accuracy = 1)) +
        scale_x_continuous(expand = c(0.01,0.01),breaks = seq(0,150, 10)) +
-       theme_bw() 
+       theme_bw() + theme(axis.title.x = element_blank())
 
 
 #Taking log
@@ -100,9 +100,9 @@ y <- ggplot(data=data, aes(lnw)) +
   geom_histogram(aes(y = (..count..)/sum(..count..)), fill = 'darkseagreen4', color = 'black', 
                  size = 0.25, alpha = 0.8, bins = 60) + 
   labs(title='Distribution of Log Wage', x='Log of Wage', y='Percent') +
-  scale_y_continuous(expand = c(0.01,0.01),labels = scales::percent_format(accuracy = 1)) +
+  scale_y_continuous(expand = c(0.001,0.001),labels = scales::percent_format(accuracy = 1)) +
   scale_x_continuous(breaks = seq(-8,5, 1)) +
-  theme_bw()
+  theme_bw() + theme(axis.title.x = element_blank())
 
 # REGRESSION ANALYSIS I. - Predicting Price
 #
@@ -157,10 +157,10 @@ c <- ggplot(data = data, aes(x=age,y=lnw)) +
 d <- ggplot(data=data, aes(age)) + 
   geom_histogram(aes(y = (..count..)/sum(..count..)), fill = 'darkseagreen4', color = 'black', 
                  size = 0.25, alpha = 0.8, bins = 30) + 
-  labs(title='Distribution of Age', x='Age (years)', y='Percent') + 
-  scale_y_continuous(expand = c(0.01,0.01),labels = scales::percent_format(accuracy = 1)) +
-  scale_x_continuous(expand = c(0.01,0.01),breaks = seq(15,70, 5)) +
-  theme_bw()
+  labs(title='Distribution of Age (years)', x='Age (years)', y='Percent') + 
+  scale_y_continuous(expand=c(0.001,0.001), labels = scales::percent_format(accuracy = 1)) +
+  scale_x_continuous(breaks = seq(15,70, 5)) +
+  theme_bw() + theme(axis.title.x = element_blank())
 
 
 #Race
@@ -168,10 +168,10 @@ d <- ggplot(data=data, aes(age)) +
 e <- ggplot(data=data, aes(factor(race))) + 
   geom_histogram(aes(y = (..count..)/sum(..count..)), fill = 'darkseagreen4', color = 'black', 
                  size = 0.25, alpha = 0.8, stat = 'count') + 
-  labs(title='Distribution of Race', x='Race', y='Percent') + 
+  labs(title='Distribution of Race', x='Race') + 
   scale_y_continuous(expand = c(0.01,0.01),labels = scales::percent_format(accuracy = 1)) +
   scale_x_discrete(labels = c('White','Black')) +
-  theme_bw()
+  theme_bw() + theme(axis.title = element_blank())
 
 
 #Female
@@ -180,10 +180,11 @@ e <- ggplot(data=data, aes(factor(race))) +
 f <- ggplot(data=data, aes(factor(female))) + 
   geom_histogram(aes(y = (..count..)/sum(..count..)), fill = 'darkseagreen4', color = 'black', 
                  size = 0.25, alpha = 0.8, stat='count') + 
-  labs(title='Distribution of Gender', x='Gender', y='Percent') + 
+  labs(title='Distribution of Gender', x='Gender') + 
   scale_y_continuous(expand = c(0.01,0.01),labels = scales::percent_format(accuracy = 1)) +
   scale_x_discrete(labels = c('Male','Female')) +
-  theme_bw()
+  theme_bw() +
+  theme(axis.title= element_blank())
 
 
 #Education 44(Master's) 43(Bachelors) 40(Some College but no degree) 39(highschool)
@@ -194,17 +195,17 @@ g <- ggplot(data=data, aes(factor(educ))) +
   labs(title='Distribution of Education', x='Education', y='Percent') + 
   scale_y_continuous(expand = c(0.01,0.01),labels = scales::percent_format(accuracy = 1)) +
   scale_x_discrete(labels = c('High School',  'College', "Bachelor's","Master's" )) +
-  theme_bw()
+  theme_bw() + theme(axis.title.x = element_blank())
 
 #Job Type
 
 h <- ggplot(data=data, aes(factor(class))) + 
   geom_histogram(aes(y = (..count..)/sum(..count..)), fill = 'darkseagreen4', color = 'black', 
                  size = 0.25, alpha = 0.8, stat='count') + 
-  labs(title='Distribution of Job Sector', x='Job Sector', y='Percent') + 
+  labs(title='Distribution of Job Sector') + 
   scale_y_continuous(expand = c(0.01,0.01),labels = scales::percent_format(accuracy = 1)) +
   scale_x_discrete(labels = c('Local Gov', "State Gov",'Priv Non Profit','Priv Profit' )) +
-  theme_bw()
+  theme_bw() + theme(axis.title = element_blank())
 
 
 
@@ -283,9 +284,10 @@ m_comp <- tibble( model = models ,
 i <- ggplot( m_comp , aes( x = complexity , y = RMSE ) ) +
   geom_point(color='red',size=2) +
   geom_line(color='darkseagreen4',size=0.5)+
-  labs(x='Number of explanatory variables',y='Averaged RMSE',
-       title='Prediction performance and model compexity') +
-  theme_bw()
+  labs(x='Number of explanatory variables',y='Averaged RMSE for test samples') +
+  theme_bw() +
+  theme(axis.title = element_text(size = 7),
+        axis.text = element_text(size=7))
 
 ```
 
@@ -305,7 +307,7 @@ Model4: *race, age, age squared, age cube, gender, education level, job sector, 
 ### Relationship between model complexity and performance                                                                         
 
 There is a total of 2,245 observations and, our regression models get more complex with an addition of new variables, the most complex model includes interaction terms. The best predictor model is selected by first comparing the BIC and RMSE values in the full sample followed by k-fold-cross-validation with k set at 5. Both approaches indicate that Model 3 and Model 4 can potentially be chosen as best predictor models. Both models have the lowest BIC, 3049 and 3055, and lowest RMSE, 0.471 and 0.467, in the full sample, respectively. They also have the lowest average cross-validated RMSE being 0.480 and 0.475, with a similar variation amongst the folds. Overall, Model 3 is the less complex model of the two. It has similar RMSE values that show lower prediction error and the lowest BIC which discourages over fitting. In conclusion, Model 3 is a better predictor model. *Please see Figure 6 and Figure 7 in the Appendix.*
-```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.height= 2, fig.width= 4, fig.align='center'}
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.height= 2, fig.width= 5, fig.align='center'}
 i
 ```
 A smaller averaged RMSE signals to a better prediction performance of the model. Initially, the drop in average RMSE is greater as more coefficients are added, but it almost flattens between Model 3 and Model 4. After a certain point the average RMSE will start increasing due to the growth in model complexity. Too many variables tend to over fit the original data, hence making it a bad predictor for the general pattern or population. 
@@ -327,7 +329,7 @@ A smaller averaged RMSE signals to a better prediction performance of the model.
 
 ```{r, echo=FALSE, warning=FALSE, message=FALSE}
 var_data <- read_csv('https://raw.githubusercontent.com/MahrukhKhan/Data_Analysis_3/main/data/DA3-Assignment-Variables.csv')
-kable(var_data, format="latex", booktabs=TRUE) %>% kable_styling(latex_options = c('striped','hold_position',"scale_down"), font_size = 4, full_width=F)
+kable(var_data, format="latex", booktabs=TRUE, linesep = "") %>% kable_styling(latex_options = c('striped','hold_position',"scale_down"), font_size = 4, full_width=F)
 ```
 
 ## Figure 2: Distribution of Earnings Per Hour
@@ -350,7 +352,7 @@ grid.arrange(g,h, nrow=1)
 
 ## Figure 4: Association of age and its functional forms with hourly wage
 
-```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.height= 10}
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.height= 10, fig.align='center'}
 grid.arrange(a,b,c)
 ```
 
@@ -358,12 +360,12 @@ grid.arrange(a,b,c)
 ## Figure 5: RMSE AND BIC for full sample
 
 ```{r, echo=FALSE}
-kable(full_sample, format="latex", booktabs=TRUE) %>% kable_styling(latex_options = c('hold_position',"scale_down"), font_size = 8, full_width=F)
+kable(full_sample, format="latex", booktabs=TRUE) %>% kable_styling(latex_options = 'hold_position')
 ```
 
 ## Figure 6: K Fold Cross Validation
 ```{r, echo=FALSE, fig.width=3}
-kable(cv_mat, format="latex", booktabs=TRUE) %>% kable_styling(latex_options = c('striped', 'hold_position',"scale_down"), font_size = 2)
+kable(cv_mat, format="latex", booktabs=TRUE) %>% kable_styling(latex_options = c('striped', 'hold_position',"scale_down"), font_size = 2) 
 
 ```
 
