@@ -1,5 +1,5 @@
 ---
-title: "DA3 - Assignment 1 - Mahrukh Khan"
+title: "Mahrukh Khan"
 geometry: "left=1cm,right=1cm,top=0.5cm,bottom=1.5cm"
 output: pdf_document
 ---
@@ -35,7 +35,7 @@ datasummary( as.factor(race) ~ N + Percent() , data = data)
 
 #Keep white and black
 data <- data %>%  filter(race==1 | race == 2) %>% 
-        mutate( White = ifelse( race==1,1,0))
+        mutate( white = ifelse( race==1,1,0))
 
 
 #Checking frequency by class
@@ -80,7 +80,7 @@ data <- data %>% filter(!(wage > 100 | wage<=1.00))
 data <- data %>% mutate(lnw=log(wage))
 ############################################## Graphs ######################################################
 
-data_sum <- datasummary( age + female + HC + MA + BA + GOV + PP + PNP + White + wage ~
+data_sum <- datasummary( wage + age + female + white + HC + MA + BA + GOV + PP + PNP ~
                Mean + Median + Min + Max + P25 + P75 + N , data = data )
 
 #Histogram of outcome variable `wage`
@@ -111,11 +111,12 @@ y <- ggplot(data=data, aes(lnw)) +
 a <- ggplot(data = data, aes(x=age, y=lnw)) +
   geom_point( color = 'darkseagreen', size = 2,  shape = 16, alpha = 0.5, show.legend=F, na.rm = TRUE) + 
   geom_smooth(method="loess", se=F, colour='red', size=1, span=0.9) +
-  labs(title='Lowess with Age', x = "Age (years)",y = "Log Wage") +
+  labs(title='Lowess with Age', x = "Age (years)",y = "Log of Hourly Wage") +
   theme_bw() +
   expand_limits(x = 0.01, y = 0.01) +
   scale_y_continuous(expand = c(0.01,0.01), limits = c(0,6)) +
-  scale_x_continuous(expand = c(0.01,0.01), limits = c(10,70))
+  scale_x_continuous(expand = c(0.01,0.01), limits = c(10,70)) +
+  theme(axis.text = element_text(size=7))
 
 
 
@@ -125,7 +126,7 @@ b <- ggplot(data = data, aes(x=age,y=lnw)) +
   geom_smooth( aes(colour='red'), method="loess", formula = y ~ x,se=F, size=1) +
   geom_smooth( aes(colour='blue'), method="lm", formula = y ~ poly(x,2) , se=F, size=1) +
   geom_point( aes( y = lnw ) , color = 'darkseagreen', size = 1,  shape = 16, alpha = 0.8, show.legend=F, na.rm = TRUE) + 
-  labs(title='Lowess with Age and Age Square', x = "Age (years)",y = "Log  Wage ") +
+  labs(title='Lowess with Age and Age Square', x = "Age (years)",y = "Log of Hourly Wage ") +
   scale_color_manual(name="", values=c('red','blue'),labels=c("Lowess in age","Quadratic in age")) +
   theme_bw() +
   scale_y_continuous(expand = c(0.01,0.01), limits=c (0 ,6)) +
@@ -133,7 +134,8 @@ b <- ggplot(data = data, aes(x=age,y=lnw)) +
   theme(legend.position = c(0.7,0.7),
         legend.direction = "horizontal",
         legend.background = element_blank(),
-        legend.box.background = element_rect(color = "white"))
+        legend.box.background = element_rect(color = "white"),
+        axis.text = element_text(size=7))
 
 #Lowess vs. square specification with age
 
@@ -141,7 +143,7 @@ c <- ggplot(data = data, aes(x=age,y=lnw)) +
   geom_smooth( aes(colour='red'), method="loess", formula = y ~ x,se=F, size=1) +
   geom_smooth( aes(colour='blue'), method="lm", formula = y ~ poly(x,3) , se=F, size=1) +
   geom_point( aes( y = lnw ) , color = 'darkseagreen', size = 1,  shape = 16, alpha = 0.8, show.legend=F, na.rm = TRUE) + 
-  labs(title='Lowess with Age and Age Cube', x = "Age (years)",y = "Log Wage ") +
+  labs(title='Lowess with Age and Age Cube', x = "Age (years)",y = "Log of Hourly Wage ") +
   scale_color_manual(name="", values=c('red','blue'),labels=c("Lowess in age","Cubic in age")) +
   theme_bw() +
   scale_y_continuous(expand = c(0.01,0.01), limits=c (0 ,6)) +
@@ -149,7 +151,8 @@ c <- ggplot(data = data, aes(x=age,y=lnw)) +
   theme(legend.position = c(0.7,0.7),
         legend.direction = "horizontal",
         legend.background = element_blank(),
-        legend.box.background = element_rect(color = "white"))
+        legend.box.background = element_rect(color = "white"),
+        axis.text = element_text(size=7))
 
 ##### Variables Distribution ######
 #age
@@ -215,10 +218,10 @@ h <- ggplot(data=data, aes(factor(class))) +
 ######################################### REGRESSION  #######################################################
 
 
-model1 <- as.formula(lnw ~ White)
-model2 <- as.formula(lnw ~ White + age + agesq)
-model3 <- as.formula(lnw ~ White + age + agesq + female + BA + MA)
-model4 <- as.formula(lnw ~  White + age + agesq + agecu + female + BA + MA + PP + PNP + White*MA + White*BA)
+model1 <- as.formula(lnw ~ white)
+model2 <- as.formula(lnw ~ white + age + agesq)
+model3 <- as.formula(lnw ~ white + age + agesq + female + BA + MA)
+model4 <- as.formula(lnw ~  white + age + agesq + agecu + female + BA + MA + PP + PNP + white*MA + white*BA)
 
 
 # Running simple OLS
@@ -231,6 +234,7 @@ reg4 <- feols(model4, data=data, vcov = 'hetero')
 
 # evaluation of the models: using all the sample
 fitstat_register("k", function(x){length( x$coefficients ) - 1}, "No. Variables")
+
 full_sample <- etable( reg1 , reg2 , reg3 , reg4, fitstat = c('aic','bic','rmse','r2','n','k') )
 
 # Cross-validation for better evaluation of predictive performance
@@ -293,7 +297,8 @@ i <- ggplot( m_comp , aes( x = complexity , y = RMSE ) ) +
 
 ### Introduction
 
-This assignment uses cps-earnings dataset. It builds predictive models using linear regressions on target variable, earnings per hour, for the Community and Social Services Occupation. It will compare model performance by analyzing the relationship between model complexity and performance by using metrics such as RMSE and BIC in the full sample and k-fold-cross-validated RMSE. 
+In this assignment, linear regressions are used to build four predictive models for earnings per hour in **Community and Social Services Occupation**. Model performance and complexity is evaluated using metrics RMSE and BIC in the full sample and k-fold-cross-validated RMSE.
+Data: cps earnings data-set
 
 ### Choice of Predictors
 I chose demographic variables such as gender, age, race, education level and job sector. Due to higher female workers, community and social services occupation has been considered a gendered profession. Despite female dominance, the wage gap could potentially be a prevalent problem Also, traditionally, wages in public and private sector have been different. In addition, race discrimination can impact wages earned per hour. Another demographic variable is age which reflects one's experience and position in the work field, being positively associated with wage. Lastly, holding a higher degree can escalate job position in return boosting wage.  
@@ -306,7 +311,7 @@ Model4: *race, age, age squared, age cube, gender, education level, job sector, 
 
 ### Relationship between model complexity and performance                                                                         
 
-There is a total of 2,245 observations and, our regression models get more complex with an addition of new variables, the most complex model includes interaction terms. The best predictor model is selected by first comparing the BIC and RMSE values in the full sample followed by k-fold-cross-validation with k set at 5. Both approaches indicate that Model 3 and Model 4 can potentially be chosen as best predictor models. Both models have the lowest BIC, 3049 and 3055, and lowest RMSE, 0.471 and 0.467, in the full sample, respectively. They also have the lowest average cross-validated RMSE being 0.480 and 0.475, with a similar variation amongst the folds. Overall, Model 3 is the less complex model of the two. It has similar RMSE values that show lower prediction error and the lowest BIC which discourages over fitting. In conclusion, Model 3 is a better predictor model. *Please see Figure 6 and Figure 7 in the Appendix.*
+There is a total of 2,239 observations and, our regression models get more complex with an addition of new variables, the most complex model includes interaction terms. The best predictor model is selected by first comparing the BIC and RMSE values in the full sample followed by k-fold-cross-validation with k set at 5. Both approaches indicate that Model 3 and Model 4 can potentially be chosen as best predictor models. Both models have the lowest BIC, 3049 and 3055, and lowest RMSE, 0.471 and 0.467, in the full sample, respectively. They also have the lowest average cross-validated RMSE being 0.480 and 0.475, with a similar variation amongst the folds. Overall, Model 3 is the less complex model of the two. It has similar RMSE values that show lower prediction error and the lowest BIC which discourages over fitting. In conclusion, Model 3 is a better predictor model. *Please see Figure 6 and Figure 7 in the Appendix.*
 ```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.height= 2, fig.width= 5, fig.align='center'}
 i
 ```
@@ -320,10 +325,10 @@ A smaller averaged RMSE signals to a better prediction performance of the model.
 
 ## Data Cleaning, Manipulation and EDA
 
-- Earnings per hour was set between 1 and 100 dollars. 
-- The frequency distribution for categorical variables was used to combine or keep relevant categories. Relevant categories kept can be seen in   Figure 1.
-- All variables' distributions were made for a better understanding of the data. Please see figure 4. 
-- Functional forms of continuous variable, age, were explored using the lowess curve to analyze its association with the target variable. Please   see figure 5. 
+- The frequency distribution for categorical variables was used to combine or keep relevant categories. *Relevant categories kept can be seen in   Figure 1.*
+- Earnings per hour was set between 1 and 100 dollars. Log transformation was conducted due to the right tailed distribution of hourly wage. *Please see Figure 2.* 
+- All variables' distributions were made for a better understanding of the data. *Please see Figure 3.* 
+- Functional forms of continuous variable, age, were explored using the lowess curve to analyze its association with the target variable. *Please see Figure 4.* 
 
 ## Figure 1: Variable Description 
 
@@ -356,15 +361,22 @@ grid.arrange(g,h, nrow=1)
 grid.arrange(a,b,c)
 ```
 
+## Figure 5: Quantitative Statistics of variables
 
-## Figure 5: RMSE AND BIC for full sample
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+data_sum %>% kableExtra::kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+
+## Figure 6: RMSE AND BIC for full sample
 
 ```{r, echo=FALSE}
 kable(full_sample, format="latex", booktabs=TRUE) %>% kable_styling(latex_options = 'hold_position')
 ```
 
-## Figure 6: K Fold Cross Validation
-```{r, echo=FALSE, fig.width=3}
+\newpage
+## Figure 7: K Fold Cross Validation
+```{r, echo=FALSE}
 kable(cv_mat, format="latex", booktabs=TRUE) %>% kable_styling(latex_options = c('striped', 'hold_position',"scale_down"), font_size = 2) 
 
 ```
