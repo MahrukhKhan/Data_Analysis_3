@@ -13,7 +13,7 @@ library(grid)
 library(gridExtra)
 library(kableExtra)
 
-data <- read_csv('https://raw.githubusercontent.com/MahrukhKhan/Data_Analysis_3/main/data/morg-2014-emp.csv')
+data <- read_csv('https://raw.githubusercontent.com/MahrukhKhan/Data_Analysis_3/main/data/morg-2014-emp.csv?token=GHSAT0AAAAAABQK4V76Y4GSPPLMEWRZH6GKYPRQJKQ')
 ```
 
 
@@ -333,7 +333,7 @@ A smaller averaged RMSE signals to a better prediction performance of the model.
 ## Figure 1: Variable Description 
 
 ```{r, echo=FALSE, warning=FALSE, message=FALSE}
-var_data <- read_csv('https://raw.githubusercontent.com/MahrukhKhan/Data_Analysis_3/main/data/DA3-Assignment-Variables.csv')
+var_data <- read_csv('https://raw.githubusercontent.com/MahrukhKhan/Data_Analysis_3/main/data/DA3-Assignment-Variables.csv?token=GHSAT0AAAAAABQK4V77PUAT2AW5GBJC5FECYPRQIDA')
 kable(var_data, format="latex", booktabs=TRUE, linesep = "") %>% kable_styling(latex_options = c('striped','hold_position',"scale_down"), font_size = 4, full_width=F)
 ```
 
