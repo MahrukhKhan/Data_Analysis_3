@@ -1,0 +1,1093 @@
+---
+title: "Predicting Prices Using Airbnb Dataset"
+author: "Mahrukh Khan"
+geometry: "left=1.5cm,right=1.5cm,top=1.5cm,bottom=1.5cm"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(tidyverse)
+library(modelsummary)
+library(dplyr)
+library(caret)
+library(ranger)
+library(pdp)
+library(gbm)
+library(rattle)
+#install.packages('skimr')
+library(skimr)
+library(ggpubr)
+library(kableExtra)
+```
+
+
+```{r, include=FALSE}
+#Loading Data and initial cleaning
+data <- fread('listings.csv.gz')
+```
+
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+#Feature Engineering - factor variables
+
+#Property which accommodates guests between 2-6
+
+data <- data %>%filter(accommodates>=2 & accommodates<=6)
+unique(data$n_accommodates)
+
+datasummary(property_type ~ N + Percent(), data = data)
+
+#Property Type 
+data <- data %>%
+  filter(property_type %in% c("Entire condominium (condo)", "Private room in condominium (condo)",
+                              "Entire serviced apartment", "Private room in serviced apartment",
+                              "Room in serviced apartment", "Entire home/apt", 
+                              "Shared room in condominium (condo)", "Shared room in serviced apartment", "Entire rental unit"))
+
+#Rename property type
+data <- data %>%
+  mutate(
+    property_type = ifelse(data$property_type == "Entire condominium (condo)" | 
+                          data$property_type=="Private room in condominium (condo)" |
+                          data$property_type=="Shared room in condominium (condo)",
+                          "Condo", data$property_type),
+                          f_property_type = factor(property_type))
+
+data <- data %>%
+  mutate(
+    f_property_type = ifelse(data$f_property_type == "Entire home/apt" | 
+                             data$f_property_type=="Entire serviced apartment" |
+                             data$f_property_type=="Private room in serviced apartment"|
+                             data$f_property_type=="Shared room in serviced apartment"|
+                             data$f_property_type=='Room in serviced apartment',
+                             "Apartment", data$property_type))
+
+datasummary(f_property_type ~ N + Percent(), data = data)
+
+#Room Type 
+
+datasummary(room_type ~ N + Percent(), data = data )
+data <- data %>% filter(room_type!='Hotel room') %>% mutate(f_room_type = factor(room_type))
+
+#Rename room type 
+data$f_room_type <- factor(ifelse(data$f_room_type== "Entire home/apt", "EntireApt",
+                                   ifelse(data$f_room_type== "Private room", "Private",
+                                          ifelse(data$f_room_type== "Shared room", "Shared", "."))))
+
+datasummary(f_room_type ~ N + Percent(), data = data )
+
+#Neighborhood Cleansed 
+data <- data %>% mutate(f_neighbourhood_cleansed = factor(neighbourhood_cleansed))
+
+datasummary(f_neighbourhood_cleansed ~ N + Percent(), data = data )
+
+```
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+#FeatureEngineering: Numerical 
+
+#Reponse rate
+data <- data %>%
+  mutate(p_host_response_rate = as.numeric(host_response_rate))
+
+#Bathrooms
+data$bathrooms_text <- as.numeric(gsub("[a-zA-Z ]", "", data$bathrooms_text))
+data <- data %>% rename(bathroom=bathrooms_text) %>% slice(-c(4457))
+
+#Create days since first review
+data <- data %>%
+  mutate(
+    n_days_since = as.numeric(as.Date(calendar_last_scraped,format="%Y-%m-%d") -
+                              as.Date(first_review ,format="%Y-%m-%d")))
+#Create host since
+data <- data %>%
+  mutate(
+    n_host_since = as.numeric(as.Date(calendar_last_scraped,format="%Y-%m-%d") -
+                                as.Date(host_since ,format="%Y-%m-%d")))
+  
+#Add new numeric columns from certain columns
+numericals <- c("accommodates","bathroom","bedrooms", "beds","review_scores_rating",
+                "number_of_reviews","review_scores_cleanliness",
+                "reviews_per_month","review_scores_checkin","review_scores_communication",                
+                "review_scores_location", "minimum_nights","beds")
+data <- data %>%
+  mutate_at(vars(all_of(numericals)), lst("n"=as.numeric))
+
+
+#Rename columns so they start with n_ as opposed to end with _n
+nnames <- data %>%
+  select(ends_with("_n")) %>%
+  names()
+nnames_i <- match(nnames, colnames(data))
+colnames(data)[nnames_i] <- paste0("n_", numericals)
+
+#Create dummy variables
+data <- data %>% mutate(d_instant_bookable= ifelse(data$instant_bookable=='t',1,0),
+                d_super_host= ifelse(data$host_is_superhost=='t',1,0),
+                d_host_identity_verified = ifelse(data$host_identity_verified=='t',1,0))
+
+#Amenities
+
+
+#unique(gsub("[^a-zA-Z]", "", unlist(strsplit(data$amenities,','))))
+
+data$amenities <- strsplit(data$amenities, ',')
+data$amenities <- tolower(gsub("[^a-zA-Z]", "", data$amenities))
+
+
+at <- list(
+  d_long_term_stay = "longtermstaysallowed",
+  d_parking_on_premise = "parkingonpremises",
+  d_coffee_maker = "coffeemaker",
+  d_dark_shades = 'darkeningshades',
+  d_pool = 'pool|hottub',
+  d_outdoor = 'patio|balcony|backyard|beachfront',
+  d_stream = 'netflix|chromecast',
+  d_tv = 'apple|hdtv|tv',
+  d_bidet = 'bidet',
+  d_workspace='workspace',
+  d_gym='gym',
+  d_fireplace='fireplace',
+  d_kitchen='kitchen',
+  d_wifi='wifi')
+
+for(x in names(at)) data[[x]] <- ifelse(grepl(at[[x]], data$amenities)==TRUE,1,0)
+```
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+#Keep columns if contain d_, n_,f_, p_, usd_ and some others
+data <- data %>%
+  select(matches("^d_.*|^n_.*|^f_.*|^p_.*|^usd_.*"), price, id,
+         neighbourhood_cleansed,room_type,property_type)
+```
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+
+#Clean daily usd_price variable
+
+data$usd_price <- str_sub(data$price,2)
+data$usd_price <- gsub(",","",data$usd_price)
+data$usd_price <- as.numeric(data$usd_price)
+
+#The usd_price has originally been give in thai baht and needs to be converted to dollars
+data$usd_price <- data$usd_price*0.030
+
+price_datasum <- datasummary(usd_price ~ Mean + Median + Min + Max + P25 + P75 , data = data )
+
+data <- data %>%
+  mutate(ln_usd_price = log(usd_price))
+data <- data %>%
+  filter(usd_price<1000) %>%  
+  filter(usd_price>10)
+
+
+
+```
+
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+#Look at patterns of association with numeric variables
+
+#Association with beds
+ a_beds <- ggplot(data = subset(data, n_beds<50), aes(x=log(n_beds), y=usd_price)) +
+  geom_point( color = 'lightcoral', size = 2,  shape = 16, alpha = 0.5, show.legend=F, na.rm = TRUE) + 
+  geom_smooth(method="loess", se=F, colour='red', size=1, span=0.9) +
+  labs(x = "Number of beds",y = "Price (USD)") +
+  theme_bw() +
+  expand_limits(x = 0.01, y = 0.01) +
+  theme(axis.text = element_text(size=7))
+
+ 
+ #Association with guests
+
+ a_accom <- ggplot(data = data, aes(x=n_accommodates, y=usd_price)) +
+  geom_point( color = 'lightcoral', size = 2,  shape = 16, alpha = 0.5, show.legend=F, na.rm = TRUE) + 
+  geom_smooth(method="loess", se=F, colour='red', size=1, span=0.9) +
+  labs(x = "Number of guests",y = "Price (USD)") +
+  theme_bw() +
+  expand_limits(x = 0.01, y = 0.01) +
+  theme(axis.text = element_text(size=7),axis.title.y = element_blank())
+ 
+ 
+ #Association with number of reviews
+ 
+
+ a_reviews <- ggplot(data = subset(data, n_number_of_reviews<550), aes(x=n_number_of_reviews, y=usd_price)) +
+  geom_point( color = 'lightcoral', size = 2,  shape = 16, alpha = 0.5, show.legend=F, na.rm = TRUE) + 
+  geom_smooth(method="loess", se=F, colour='red', size=1, span=0.9) +
+  labs(x = "Number of reviews",y = "Price (USD)") +
+  theme_bw() +
+  expand_limits(x = 0.01, y = 0.01) +
+  theme(axis.text = element_text(size=7),axis.title.y = element_blank())
+
+ ggarrange(
+ a_beds,
+ a_accom,
+ a_reviews,
+ ncol =3,
+ nrow=1)
+ 
+
+```
+
+
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+
+
+#Pool accommodation with 0,1,2,6 bathrooms
+data <- data %>%
+  mutate(f_bathroom = cut(n_bathroom, c(0,1,2,6), labels=c(0,1,2), right = F) )
+
+#Pool num of reviews to 3 categories: none, 1-51 and >51
+#sort(unique(data$n_number_of_reviews))
+data <- data %>%
+  mutate(f_number_of_reviews = cut(n_number_of_reviews, c(0,1,51,max(data$n_number_of_reviews)), labels=c(0,1,2), right = F))
+
+#Pool and categorize the number of minimum nights: 1,2,3, 3+
+data <- data %>%
+  mutate(f_minimum_nights= cut(n_minimum_nights, c(1,2,3,max(data$n_minimum_nights)), labels=c(1,2,3), right = F))
+
+
+#Change Infinite values with NaNs
+for (j in 1:ncol(data) ) data.table::set(data, which(is.infinite(data[[j]])), j, NA)
+####################################################################################################
+
+
+#Squares and further values to create
+data <- data %>%
+  mutate(n_accommodates2=(n_accommodates)^2, 
+         n_beds2 = n_beds^2,
+         n_number_of_reviews2 = (n_number_of_reviews)^3)
+
+
+
+```
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+##Missing values
+
+# what to do with missing values? 
+# 1. drop if no target
+data <- data %>%
+  drop_na(usd_price)
+
+
+# 2. input when few, not that important
+
+#Testing what to replace for missing bedrooms
+#Median n_beds is 1, and minimum n_bedrooms is 1 - replacing with 1
+
+data %>% filter(is.na(n_bedrooms)) %>%  summarize(median(n_beds, na.rm=TRUE))
+#datasummary(n_bedrooms ~ Min, data = data)
+
+#Replacing
+#Changed the way we replace ln_beds
+
+data <- data %>%
+  mutate(
+    n_bathroom =  ifelse(is.na(n_bathroom), median(n_bathroom, na.rm = T), n_bathroom), #assume at least 1 bath
+    n_beds = ifelse(is.na(n_beds), n_accommodates, n_beds), #assume n_beds= n_accomodates
+    n_bedrooms = ifelse(is.na(n_bedrooms), 1 , n_bedrooms),
+    f_bathroom=ifelse(is.na(f_bathroom),1, f_bathroom),
+    f_minimum_nights=ifelse(is.na(f_minimum_nights),1, f_minimum_nights),
+    f_number_of_reviews=ifelse(is.na(f_number_of_reviews),1, f_number_of_reviews),
+    n_beds2 = ifelse(is.na(n_beds2), (n_accommodates)^2,n_beds2)
+  ) 
+
+
+# 3. drop columns when many missing not important
+to_drop <- c("p_host_response_rate","n_review_scores_cleanliness",
+             "n_review_scores_checkin","n_review_scores_communication", 
+             "n_review_scores_location")
+
+data <- data %>%
+  select(-one_of(to_drop))
+
+#to_filter <- sapply(data, function(x) sum(is.na(x)))
+#to_filter[to_filter > 0]
+
+
+
+# 4. Replace missing variables re reviews with zero, when no review + add flags
+data <- data %>%
+  mutate(
+    flag_days_since=ifelse(is.na(n_days_since),1, 0),
+    n_days_since =  ifelse(is.na(n_days_since), median(n_days_since, na.rm = T), n_days_since),
+    n_host_since = ifelse(is.na(n_host_since), median(n_host_since, na.rm = T), n_host_since),
+    flag_review_scores_rating=ifelse(is.na(n_review_scores_rating),1, 0),
+    n_review_scores_rating =  ifelse(is.na(n_review_scores_rating), median(n_review_scores_rating, na.rm = T),   n_review_scores_rating),
+    flag_reviews_per_month=ifelse(is.na(n_reviews_per_month),1, 0),
+    n_reviews_per_month =  ifelse(is.na(n_reviews_per_month), median(n_reviews_per_month, na.rm = T), n_reviews_per_month),
+    flag_n_number_of_reviews=ifelse(n_number_of_reviews==0,1, 0)
+   )
+
+# redo features
+# Create variables, measuring the time since: squared, cubic, logs
+data <- data %>%
+  mutate(
+    n_days_since2=n_days_since^2,
+    n_days_since3=n_days_since^3,
+    ln_review_scores_rating = log(n_review_scores_rating+1)
+  )
+
+
+# Look at data
+#datasummary( id ~ N , data = data )
+#datasummary_skim( data , 'categorical' )
+
+
+# where do we have missing variables now?
+to_filter <- sapply(data, function(x) sum(is.na(x)))
+to_filter[to_filter > 0]
+
+```
+
+
+```{r, warning=FALSE, message=FALSE, include=FALSE}
+
+ usd_p <- ggplot(data=data, aes(usd_price)) + 
+       geom_histogram(aes(y = (..count..)/sum(..count..)), fill = 'salmon', color = 'pink', 
+                     size = 0.25, alpha = 0.8, bins = 30) + 
+       labs(title='Distribution of Price (USD)', x='Price Per Night (US Dollars)', y='Percent') + 
+       expand_limits(x = 0.01, y = 0.01) +
+       scale_y_continuous(expand = c(0.001,0.001),labels = scales::percent_format(accuracy = 1)) +
+       scale_x_continuous(expand = c(0.01,0.01),breaks = seq(0,300, 50),limits = c(0,300)) +
+       theme_bw() + theme(axis.title.x = element_blank())
+
+ usd_p2 <- ggplot(data=data, aes(ln_usd_price)) + 
+       geom_histogram(aes(y = (..count..)/sum(..count..)), fill = 'salmon', color = 'pink', 
+                     size = 0.25, alpha = 0.8, bins = 30) + 
+       labs(title='Distribution of Price (USD)', x='Price Per Night (US Dollars)', y='Percent') + 
+       expand_limits(x = 0.01, y = 0.01) +
+       scale_y_continuous(expand = c(0.001,0.001),labels = scales::percent_format(accuracy = 1)) +
+       scale_x_continuous(expand = c(0.01,0.01),limits = c(2,7)) +
+       theme_bw() + theme(axis.title.x = element_blank())
+ 
+#datasummary( id ~ N , data = data )
+```
+
+
+
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+#Interactions
+
+#Interaction of accomodates and property type
+
+accomm_plot <-  ggplot(data, aes(x = factor(n_accommodates), y = usd_price,
+                fill = f_property_type, color= f_property_type)) +
+  geom_boxplot(alpha=0.8, na.rm=T, outlier.shape = NA, width = 0.8) +
+  stat_boxplot(geom = "errorbar", width = 0.8, size = 0.3, na.rm=T)+
+  labs(x = "Accomodates (Persons)",y = "Price (Dollars)") +
+  scale_y_continuous(expand = c(0.01,0.01),limits = c(0,500), breaks = seq(0,500,100)) +
+  theme_bw() + theme(legend.position = c(0.26,0.88)) + theme(legend.title = element_blank())
+
+
+
+#Interaction of property type and room type
+ room_prop <- ggplot(data, aes(x=f_room_type, y = usd_price,
+                        fill = f_property_type, color= f_property_type)) +
+  geom_boxplot(alpha=0.8, na.rm=T, outlier.shape = NA, width = 0.8) +
+ stat_boxplot(geom = "errorbar", width = 0.8, size = 0.3, na.rm=T)+
+  labs(x = "Room Type",y = "Price (Dollars)") +
+  scale_y_continuous(expand = c(0.01,0.01),limits = c(0,500), breaks = seq(0,500,100)) +
+  theme_bw() + theme(legend.position = c(0.26,0.88)) + theme(legend.title = element_blank())
+ 
+ ggarrange(
+ room_prop,
+ accomm_plot,
+  nrow = 1)
+ 
+#Interaction of room type and long term stay
+ a <- ggplot(data, aes(x=f_room_type, y = usd_price,
+                        fill = factor(d_long_term_stay), color= factor(d_long_term_stay))) +
+  geom_boxplot(alpha=0.8, na.rm=T, outlier.shape = NA, width = 0.8) +
+ stat_boxplot(geom = "errorbar", width = 0.8, size = 0.3, na.rm=T)+
+  labs(x = "Long Term Stays",y = "Price (Dollars)") +
+  scale_y_continuous(expand = c(0.01,0.01),limits = c(0,200), breaks = seq(0,200,50)) +
+  theme_bw() + theme(legend.position = c(0.26,0.88)) + theme(legend.title = element_blank())
+
+  #Interaction of gym and property
+ b <- ggplot(data, aes(x=f_room_type, y = usd_price, fill = factor(d_gym), color= factor(d_gym))) +
+  geom_boxplot(alpha=0.8, na.rm=T, outlier.shape = NA, width = 0.8) +
+ stat_boxplot(geom = "errorbar", width = 0.8, size = 0.3, na.rm=T)+
+  labs(x = "Gym",y = "Price (Dollars)") +
+  scale_y_continuous(expand = c(0.01,0.01),limits = c(0,200), breaks = seq(0,200,50)) +
+  theme_bw() + theme(legend.position = "none", axis.title.y = element_blank())
+
+  #Interaction of parking on premise and property type
+  
+c <-   ggplot(data, aes(x=f_property_type, y = usd_price, fill = factor(d_parking_on_premise), color= factor(d_parking_on_premise))) +
+  geom_boxplot(alpha=0.8, na.rm=T, outlier.shape = NA, width = 0.8) +
+ stat_boxplot(geom = "errorbar", width = 0.8, size = 0.3, na.rm=T)+
+  labs(x = "Parking on Premise",y = "Price (Dollars)") +
+  scale_y_continuous(expand = c(0.01,0.01),limits = c(0,200), breaks = seq(0,200,50)) +
+  theme_bw() + theme(legend.position = "none")
+    
+  #Interaction of kitchen and room type
+  
+ d <- ggplot(data, aes(x=f_property_type, y = usd_price,
+                        fill = factor(d_kitchen), color= factor(d_kitchen))) +
+  geom_boxplot(alpha=0.8, na.rm=T, outlier.shape = NA, width = 0.8) +
+ stat_boxplot(geom = "errorbar", width = 0.8, size = 0.3, na.rm=T)+
+  labs(x = "Kitchen",y = "Price (Dollars)") +
+  scale_y_continuous(expand = c(0.01,0.01),limits = c(0,200), breaks = seq(0,200,50)) +
+  theme_bw() + theme(legend.position = "none", axis.title.y = element_blank())
+
+ ggarrange(
+ a,
+ b,
+ c,
+ d,
+ ncol =2,
+ nrow=2)
+```
+
+
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+# copy a variable - purpose later, see at variable importance
+data <- data %>% mutate(n_accommodates_copy = n_accommodates)
+
+# basic descr stat -------------------------------------------
+#skimr::skim(data)
+datasummary(usd_price~Mean+Median+P25+P75+N,data=data)
+#datasummary( f_room_type + f_property_type ~ N + Percent() , data = data )
+
+# create train and holdout samples -------------------------------------------
+# train is where we do it all, incl CV
+
+set.seed(2801)
+train_indices <- as.integer(createDataPartition(data$usd_price, p = 0.7, list = FALSE))
+data_train <- data[train_indices, ]
+data_holdout <- data[-train_indices, ]
+
+# Check the number of observations
+dim(data_train)
+dim(data_holdout)
+
+# Define models: simpler -> extended
+
+# Basic Variables inc neighborhood
+basic_vars <- c( "n_accommodates","n_accommodates2", "n_beds","n_beds2", "n_minimum_nights", "n_days_since", 
+                 "n_host_since","f_property_type","f_room_type","n_bedrooms", "f_neighbourhood_cleansed", 
+                 "n_bathroom")
+
+# reviews
+reviews <- c("n_number_of_reviews", "n_number_of_reviews2", "flag_n_number_of_reviews" ,
+             "ln_review_scores_rating", "flag_review_scores_rating")
+
+# Dummy variables
+amenities <-  grep("^d_.*", names(data), value = TRUE)
+
+#interactions for the LASSO and OLS
+
+X1  <- c("n_accommodates*f_property_type",  "f_room_type*f_property_type",  "f_room_type*d_long_term_stay",
+        "d_gym*f_property_type", "d_kitchen*f_room_type", "d_parking_on_premise*f_property_type")
+
+# with neighbourhoods
+X2  <- c("f_property_type*f_neighbourhood_cleansed", "f_room_type*f_neighbourhood_cleansed",
+         "n_accommodates*f_neighbourhood_cleansed" )
+
+predictors_1 <- c(basic_vars)
+predictors_2 <- c(basic_vars, reviews, amenities)
+predictors_E <- c(basic_vars, reviews, amenities, X1,X2)
+
+```
+
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+ 
+#########################################################################################
+# RANDOM FORESTS -------------------------------------------------------
+
+# do 5-fold CV
+train_control <- trainControl(method = "cv",
+                              number = 5,
+                              verboseIter = FALSE)
+
+# set tuning
+tune_grid <- expand.grid(
+  .mtry = c(7), #changed this because of square root
+  .splitrule = "variance",
+  .min.node.size = c(50)
+)
+
+# simpler model for model - using random forest
+set.seed(1234)
+system.time({
+  rf_model_1 <- train(
+    formula(paste0("usd_price ~", paste0(predictors_1, collapse = " + "))),
+    data = data_train,
+    method = "ranger",
+    trControl = train_control,
+    tuneGrid = tune_grid,
+    importance = "impurity"
+  )
+})
+
+rf_model_1
+#save( rf_model_1 , file = 'rf_model_1.RData' )
+
+# more complicated model - using random forest
+set.seed(1234)
+system.time({
+  rf_model_2 <- train(
+    formula(paste0("usd_price ~", paste0(predictors_2, collapse = " + "))),
+    data = data_train,
+    method = "ranger",
+    trControl = train_control,
+    tuneGrid = tune_grid,
+    importance = "impurity"
+  )
+})
+rf_model_2
+
+
+
+
+# evaluate random forests -------------------------------------------------
+
+results <- resamples(
+  list(
+    model_1  = rf_model_1,
+    model_2  = rf_model_2
+  )
+)
+summary(results)
+```
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+#######################################################################################
+#
+# PART III
+# MODEL DIAGNOSTICS -------------------------------------------------------
+#
+
+
+#########################################################################################
+# Variable Importance Plots -------------------------------------------------------
+#########################################################################################
+
+# variable importance plot
+# 1) full varimp plot, full
+# 2) varimp plot grouped
+# 3) varimp plot , top 10
+# 4) varimp plot  w copy, top 10
+
+
+rf_model_2_var_imp <- ranger::importance(rf_model_2$finalModel)/1000
+rf_model_2_var_imp_df <-
+  data.frame(varname = names(rf_model_2_var_imp),imp = rf_model_2_var_imp) %>%
+  mutate(varname = gsub("f_neighbourhood_cleansed", "Neighbourhood:", varname) ) %>%
+  mutate(varname = gsub("f_room_type", "Room type:", varname) ) %>%
+  arrange(desc(imp)) %>%
+  mutate(imp_percentage = imp/sum(imp))
+
+
+
+##############################
+# 1) full varimp plot, above a cutoff
+##############################
+
+# to have a quick look
+plot(varImp(rf_model_2))
+
+cutoff = 100
+ggplot(rf_model_2_var_imp_df[rf_model_2_var_imp_df$imp>cutoff,],
+       aes(x=reorder(varname, imp), y=imp_percentage)) +
+  geom_point(color='lightcoral', size=1.5) +
+  geom_segment(aes(x=varname,xend=varname,y=0,yend=imp_percentage), color='red', size=1) +
+  ylab("Importance (Percent)") +
+  xlab("Variable Name") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(size=6), axis.text.y = element_text(size=6),
+        axis.title.x = element_text(size=6), axis.title.y = element_text(size=6))
+
+###################################
+# 2) full varimp plot, top 10 only#
+###################################
+
+
+# have a version with top 10 vars only
+top10_var <- ggplot(rf_model_2_var_imp_df[1:15,], aes(x=reorder(varname, imp), y=imp_percentage)) +
+  geom_point(color='slateblue4', size=1) +
+  geom_segment(aes(x=varname,xend=varname,y=0,yend=imp_percentage), color='skyblue', size=0.75) +
+  ylab("Importance (Percent)") +
+  xlab("Variable Name") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_bw() + theme(axis.text=element_text(size=7),
+        axis.title=element_text(size=7,face="bold"))
+
+
+##############################
+# 2) varimp plot grouped
+##############################
+# grouped variable importance - keep binaries created off factors together
+
+varnames <- rf_model_2$finalModel$xNames
+f_neighbourhood_cleansed_varnames <- grep("f_neighbourhood_cleansed",varnames, value = TRUE)
+f_property_type_varnames <- grep("f_property_type",varnames, value = TRUE)
+f_room_type_varnames <- grep("f_room_type",varnames, value = TRUE)
+
+groups <- list(f_neighbourhood_cleansed=f_neighbourhood_cleansed_varnames,
+               f_property_type = f_property_type_varnames,
+               f_room_type = f_room_type_varnames,
+               f_bathroom = "f_bathroom",
+               n_days_since = "n_days_since",
+               n_accommodates = "n_accommodates",
+               n_beds = "n_beds")
+
+# Need a function to calculate grouped varimp
+group.importance <- function(rf.obj, groups) {
+  var.imp <- as.matrix(sapply(groups, function(g) {
+    sum(ranger::importance(rf.obj)[g], na.rm = TRUE)
+  }))
+  colnames(var.imp) <- "MeanDecreaseGini"
+  return(var.imp)
+}
+
+rf_model_2_var_imp_grouped <- group.importance(rf_model_2$finalModel, groups)
+rf_model_2_var_imp_grouped_df <- data.frame(varname = rownames(rf_model_2_var_imp_grouped),
+                                            imp = rf_model_2_var_imp_grouped[,1])  %>%
+  mutate(imp_percentage = imp/sum(imp))
+
+group_var <- ggplot(rf_model_2_var_imp_grouped_df, aes(x=reorder(varname, imp), y=imp_percentage)) +
+  geom_point(color='slateblue4', size=1) +
+  geom_segment(aes(x=varname,xend=varname,y=0,yend=imp_percentage), color='skyblue', size=0.7) +
+  ylab("Importance (Percent)") +   xlab("Variable Name") +
+  coord_flip() +
+  # expand=c(0,0),
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_bw() + theme(axis.text=element_text(size=7),
+        axis.title=element_text(size=7,face="bold"))
+
+```
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+#########################################################################################
+# Partial Dependence Plots -------------------------------------------------------
+#########################################################################################
+
+# 1) Number of accommodates
+pdp_n_acc <- pdp::partial(rf_model_2, pred.var = "n_accommodates", 
+                          pred.grid = distinct_(data_holdout, "n_accommodates"), 
+                          train = data_train)
+
+accom_var_plot <- pdp_n_acc %>%
+  autoplot( ) +
+  geom_point(color='slateblue4', size=2) +
+  geom_line(color='skyblue', size=1) +
+  ylab("Predicted Price(USD)") +
+  xlab("Accommodates (persons)") +
+  scale_x_continuous(limit=c(1,7), breaks=seq(1,7,1))+
+  theme_bw() + theme(axis.text=element_text(size=7),
+        axis.title=element_text(size=7,face="bold"))
+
+accom_var_plot
+
+table(data$f_room_type=="Private")
+
+# 2) Room type
+pdp_n_roomtype <- pdp::partial(rf_model_2, pred.var = "f_property_type", 
+                               pred.grid = distinct_(data_holdout, "f_property_type"), 
+                               train = data_train)
+room_var_plot <- pdp_n_roomtype %>%
+  autoplot( ) +
+  geom_point(color='slateblue4', size=2) +
+  ylab("Predicted Price(USD)") +
+  xlab("Room type") +
+  theme_bw() + theme(axis.title.y = element_blank(), axis.text=element_text(size=7),
+        axis.title=element_text(size=7,face="bold"))
+
+####
+```
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+# Subsample performance: RMSE / mean(y) ---------------------------------------
+# NOTE  we do this on the holdout set.
+
+# ---- cheaper or more expensive flats - not used in book
+data_holdout_w_prediction <- data_holdout %>%
+  mutate(predicted_usd_price = predict(rf_model_2, newdata = data_holdout))
+
+
+
+######### create nice summary table of heterogeneity
+a <- data_holdout_w_prediction %>%
+  mutate(is_low_size = ifelse(n_accommodates <= 3, "small apt", "large apt")) %>%
+  group_by(is_low_size) %>%
+  dplyr::summarise(
+    rmse = RMSE(predicted_usd_price, usd_price),
+    mean_usd_price = mean(usd_price),
+    rmse_norm = RMSE(predicted_usd_price, usd_price) / mean(usd_price)
+  )
+
+##Change this
+b <- data_holdout_w_prediction %>%
+  filter(f_neighbourhood_cleansed %in% c("Din Daeng", "Khlong San",
+                                         "Vadhana", "Phra Khanong",
+                                         "Bang Rak", "Phra Khanong")) %>%
+  group_by(f_neighbourhood_cleansed) %>%
+  dplyr::summarise(
+    rmse = RMSE(predicted_usd_price, usd_price), #look into this
+    mean_usd_price = mean(usd_price),
+    rmse_norm = rmse / mean_usd_price
+  )
+
+
+
+c <- data_holdout_w_prediction %>%
+  filter(f_property_type %in% c("Apartment", "Condo","Entire rental unit")) %>%
+  group_by(f_property_type) %>%
+  dplyr::summarise(
+    rmse = RMSE(predicted_usd_price, usd_price),
+    mean_usd_price = mean(usd_price),
+    rmse_norm = rmse / mean_usd_price
+  )
+
+
+d <- data_holdout_w_prediction %>%
+  dplyr::summarise(
+    rmse = RMSE(predicted_usd_price, usd_price),
+    mean_usd_price = mean(usd_price),
+    rmse_norm = RMSE(predicted_usd_price, usd_price) / mean(usd_price)
+  )
+
+# Save output
+colnames(a) <- c("", "RMSE", "Mean usd_price", "RMSE/usd_price")
+colnames(b) <- c("", "RMSE", "Mean usd_price", "RMSE/usd_price")
+colnames(c) <- c("", "RMSE", "Mean usd_price", "RMSE/usd_price")
+d<- cbind("All", d)
+colnames(d) <- c("", "RMSE", "Mean usd_price", "RMSE/usd_price")
+
+line1 <- c("Type", "", "", "")
+line2 <- c("Apartment size", "", "", "")
+line3 <- c("Borough", "", "", "")
+
+result_3 <- rbind(line2, a, line1, c, line3, b, d) %>%
+  transform(RMSE = as.numeric(RMSE), `Mean usd_price` = as.numeric(`Mean usd_price`),
+            `RMSE/usd_price` = as.numeric(`RMSE/usd_price`))
+
+result_3
+
+```
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+#########################################################################################
+#
+# PART IV
+# HORSERACE: compare with other models -----------------------------------------------
+#
+#########################################################################################
+
+# OLS with dummies for area
+# using model B
+
+
+set.seed(1234)
+system.time({
+ols_model <- train(
+  formula(paste0("usd_price ~", paste0(predictors_2, collapse = " + "))),
+  data = data_train,
+  method = "lm",
+  trControl = train_control
+)
+})
+
+
+ols_model_coeffs <-  ols_model$finalModel$coefficients
+ols_model_coeffs_df <- data.frame(
+  "variable" = names(ols_model_coeffs),
+  "ols_coefficient" = ols_model_coeffs
+) %>%
+  mutate(variable = gsub("`","",variable))
+
+
+
+set.seed(1234)
+system.time({
+ols_model2 <- train(
+  formula(paste0("usd_price ~", paste0(predictors_E, collapse = " + "))),
+  data = data_train,
+  method = "lm",
+  trControl = train_control
+)
+})
+
+
+ols_model_coeffs2 <-  ols_model2$finalModel$coefficients
+ols_model_coeffs_df2 <- data.frame(
+  "variable" = names(ols_model_coeffs2),
+  "ols_coefficient" = ols_model_coeffs2
+) %>%
+  mutate(variable = gsub("`","",variable))
+
+set.seed(1234)
+system.time({
+ols_model3 <- train(
+  formula(paste0("usd_price ~", paste0(predictors_1, collapse = " + "))),
+  data = data_train,
+  method = "lm",
+  trControl = train_control
+)
+})
+
+
+ols_model_coeffs3 <-  ols_model3$finalModel$coefficients
+ols_model_coeffs_df3 <- data.frame(
+  "variable" = names(ols_model_coeffs3),
+  "ols_coefficient" = ols_model_coeffs3
+) %>%
+  mutate(variable = gsub("`","",variable))
+
+  ols_final <- list("OLS" = ols_model3,
+                    "OLS2"= ols_model,
+                    "OLS (model w/ interactions)"=ols_model2)
+  
+  ols_r <- imap(ols_final, ~{
+  mean(results$values[[paste0(.y,"~RMSE")]])
+}) %>% unlist() %>% as.data.frame() %>%
+  rename("CV RMSE" = ".")
+
+ols_r
+
+
+```
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+# * LASSO
+# using extended model w interactions
+
+set.seed(1234)
+system.time({
+  lasso_model <- train(
+    formula(paste0("usd_price ~", paste0(predictors_E, collapse = " + "))),
+    data = data_train,
+    method = "glmnet",
+    preProcess = c("center", "scale"),
+    tuneGrid =  expand.grid("alpha" = 1, "lambda" = seq(0.01, 0.25, by = 0.01)),
+    trControl = train_control
+  )
+})
+
+lasso_coeffs <- coef(
+  lasso_model$finalModel,
+  lasso_model$bestTune$lambda) %>%
+  as.matrix() %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "variable") %>%
+  rename(lasso_coefficient = `s1`)  # the column has a name "1", to be renamed
+
+lasso_coeffs_non_null <- lasso_coeffs[!lasso_coeffs$lasso_coefficient == 0,] #180 minus intercept
+
+
+```
+
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+# CART with built-in pruning
+set.seed(1234)
+system.time({
+  cart_model <- train(
+    formula(paste0("usd_price ~", paste0(predictors_2, collapse = " + "))),
+    data = data_train,
+    method = "rpart",
+    tuneLength = 10,
+    trControl = train_control
+  )
+})
+cart_model
+# Showing an alternative for plotting a tree
+#fancyRpartPlot(cart_model$finalModel, sub = "")
+```
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+gbm_grid <-  expand.grid(interaction.depth = 5, # complexity of the tree
+                         n.trees = 250, # number of iterations, i.e. trees
+                         shrinkage = 0.1, # learning rate: how quickly the algorithm adapts
+                         n.minobsinnode = 20 # the minimum number of training set samples in a node to commence splitting
+)
+
+
+
+set.seed(1234)
+system.time({
+  gbm_model <- train(formula(paste0("usd_price ~", paste0(predictors_2, collapse = " + "))),
+                     data = data_train,
+                     method = "gbm",
+                     trControl = train_control,
+                     verbose = FALSE,
+                     tuneGrid = gbm_grid)
+})
+#gbm_model
+#gbm_model$finalModel
+```
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+
+#GBM Model with broad shrinkage 
+
+gbm_grid2 <-  expand.grid(interaction.depth = 5, # complexity of the tree
+                         n.trees = 250, # number of iterations, i.e. trees
+                         shrinkage = c(0.01, 0.05, 0.1, 0.15, 0.5), # learning rate: how quickly the algorithm adapts
+                         n.minobsinnode = 20 # the minimum number of training set samples in a node to commence splitting
+)
+
+set.seed(1234)
+system.time({
+  gbm_model2 <- train(formula(paste0("usd_price ~", paste0(predictors_2, collapse = " + "))),
+                     data = data_train,
+                     method = "gbm",
+                     trControl = train_control,
+                     verbose = FALSE,
+                     tuneGrid = gbm_grid2)
+})
+gbm_model2
+gbm_model2$finalModel
+```
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+# and get prediction rmse and add to next summary table
+# ---- compare these models
+
+final_models <-
+  list("OLS" = ols_model3,
+       "OLS (model w/ amenities and reviews)" = ols_model,
+       "OLS (model w/ interactions)"=ols_model2,
+       "LASSO (model w/ interactions)" = lasso_model,
+       "CART" = cart_model,
+       "Random forest 1: smaller model" = rf_model_1,
+       "Random forest 2: extended model" = rf_model_2,
+       "GBM (basic tuning)"  = gbm_model,
+       "GBM (broad tuning)" = gbm_model2)
+
+results <- resamples(final_models) %>% summary()
+results
+
+# Model selection is carried out on this CV RMSE
+result_4 <- imap(final_models, ~{
+  mean(results$values[[paste0(.y,"~RMSE")]])
+}) %>% unlist() %>% as.data.frame() %>%
+  rename("CV RMSE" = ".")
+
+result_4
+
+
+```
+
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+
+result_5 <- map(final_models, ~{
+  RMSE(predict(.x, newdata = data_holdout), data_holdout[["usd_price"]])
+}) %>% unlist() %>% as.data.frame() %>%
+  rename("Holdout RMSE" = ".")
+
+
+
+```
+
+## Introduction
+A real estate company needs prediction for a suitable price per night for their newly built apartments in Thailand. The apartments have a stringent accommodation capacity of 2-6 people. For precise prediction of charges per night I used OLS Linear Regression and three machine learning algorithms; Lasso, Random Forest and Gradient Boosting Method. RMSE was used as the loss function to measure performance fit of the models.
+
+## Data (Feature Engineering and Sample Design)
+
+I selected the dataset from Airbnb, available on Inside Airbnb website, which had approximately 17,000 observations. The target variable was price per night, initially given in thai baht. For an easier understanding of price variation, I converted it to dollars. The predictor variables I selected were linked to size (number of guests, number of beds, number of bathrooms etc), reviews, host information and neighbourhood location. Overall, the data quality would be considered good. 
+This data required intensive data cleaning. Data was selected for certain property types (structurally representing an apartment) that accommodated 2-6 people. Unnecessary columns were removed and those with 'true/false' values were converted into binary columns. All numerical variables were properly formatted. Amenities such as having wifi, tv or parking space for each apartment were given as a vector input in each row of the column. It was unlisted, cleaned and converted into individual binary columns. Certain quantitative variables were pooled into categories: number of bathrooms, reviews, and minimum nights. There was a significant number of missing values in the predictor variables that was dealt with either replacing with a suitable value (mean or median), creating flagged variables, or dropping a column if it did not hold significance. In the dataset, all rows missing the value of price were dropped. Furthermore, I explored the distribution of Airbnb apartment prices. It was strongly skewed with a long right tail whereas log of price was close to normally distributed. I decided to choose level price: makes it easier to interpret and there wasn't significance difference in the prediction when conducted with log of price.
+
+## Model Building
+
+**Patterns of Association:**
+Patterns of association were observed for average price per night with three predictor variables: number of guests, beds, and reviews. The number of guests showed an approximately linear relationship with potential convexity. Number of beds and reviews signalled towards a weaker link with the target variable. The former seemed almost flat, and the latter showed signs of convexity followed by a slight increase and then a decrease. Considering their patterns, a quadratic term was added for numbers of guests and beds, whereas a cubic term was introduced for number of reviews.
+
+**Interaction Terms:**
+Using domain knowledge and observing trends of certain predictor variables, interaction terms have carefully been selected. The process involved interacting various amenities with categories of properties and rooms. For instance, if the type of property had parking on its premises or had access to a kitchen. Variation of average price per night within some categories was observed, hence they've been included in our complex model.
+
+### Final Models
+
+**Model 1**:  *Number of guests accommodated, Number of guests accommodated (squared term), Number of beds, Number of beds (squared term), Number of bedrooms, Number of bathrooms, Number of minimum nights, Number of days since the first review, Number of days since the owner became a host, property type, room type,  neighborhood*
+
+**Model 2**: *M1 + reviews + amenities*
+
+**Model 3**: *M2 + interactions*
+
+## Random Forest (Benchmark Model)
+
+Random forest uses bootstrap aggregation to give us predicted value of our target variable with the help of the x variables. I first split the sample into two sub-samples, a holdout sample (30%) and the work sample (70%). A 5-fold-cross-validation was done on the work sample. I ran two random forest models:  Model 1 (only basic variables) and the second used Model 2 (adding reviews and amenities). The tuning parameters for the models were 500 bootstrap samples, square root of the total variables which was approximately 7 and minimum number of observations in the terminal node was set to 50. Due to the robustness of the algorithm towards tuning parameters, not a lot of variations were tried.  The RMSE points to Model 2 being a better prediction model than Model 1. The former had 52.07 RMSE whereas the latter had 53.08, indicating that Model 2 is slightly better. To further understand random forest, our benchmark model, I use diagnostic tools to reveal the patterns of associations that drive the prediction. 
+
+### Variable Importance Plots
+The plot captures which predictor variables matter most to the prediction. The reduction in mean squared error, also known as improvement of the fit, was averaged, and then divided by sum across all predictor variables such as neighborhoods, amenities, reviews etc. 
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE, fig.height=3,fig.width=7}
+
+ ggarrange(
+  top10_var,
+  group_var,
+ ncol =2,
+ nrow=1)
+
+```
+
+
+For better results, I decided to view the top 15 predictor variables significant for this model. 
+The variables that matter the most are for the number of beds, bathrooms, reviews, and guests accommodated. It also looks at the neighborhood the apartments are situated in. Amongst the most significant variable is the time-period of the person being a host on Airbnb which could reflect their credibility. In addition, the days passed since their first review which could also reflect on their reputation. I also decided to group the factored variables. The neighborhood, number of days since first review, accommodation size, property and room type matter the most amongst these variables. 
+
+### The Partial Dependence Plot
+
+
+```{r,warning=FALSE, message=FALSE, echo=FALSE, fig.height=1.5,fig.width=7}
+
+ ggarrange(
+  accom_var_plot,
+  room_var_plot,
+ ncol =2,
+ nrow=1)
+
+```
+
+For studying the patterns of association between some predictors and y variable, I use partial dependence plots. I picked two important variables: the number of guests to accommodate and property type. The plot with number of guests shows that average price gets higher with a rise in number of guests. For property type, it can be seen that apartments have a higher average price night followed by entire rental units and then condos. We can see that the variation is approximately 1 to 2 dollars which is hardly significant. It makes sense as they are of a similar structure.
+
+## Comparing with other models:
+
+**OLS Linear Regression:**
+This regression was conducted using all three models on the training set. Root mean squared error was used to differentiate between the models’ prediction power. We can observe that RMSE tends to slightly decrease with addition of variables and their interaction terms. Model 3 produces the lowest RMSE that is 62.04. Since there is slight variation with Model 2, it can also be chosen for price prediction due its lesser complexity. 
+
+**LASSO:**
+This algorithm was given all the predictor variables and their interaction terms as an input. Lasso penalizes those predictor variables that make the smallest reduction in the fit of the model by lowering their coefficient value, turning some to zero (dropping them). For the variables it retained, it returned 180 estimated coefficients for this prediction. In our model we provided it varying tuning parameters. It picked the most suitable and returned an RMSE of 61.39 which is lower than the OLS results. 
+
+**CART:**
+The regression tree built with CART results in keeping the most important predictor variables and showcases their interaction terms. We can observe that the RMSE tends to fall with a more complicated built of our model. However, at a certain complexity parameter which is 0.0077, it rises from 62.55 to 62.66 due to overfitting. Our final stopping rule for the subsequent split is when the improvement in R Squared is less than 0.05. This gives us an RMSE of 62.55. 
+
+**Gradient Boosting Model:**
+For GBM, I decided to use two different models through differentiation in tuning parameters. The first model had a learning 0.1 whereas the second used various values between 0.01 and 0.5. The rest of the parameters were kept same that is 250 number of trees and 20 minimum number of training set samples in a node. 
+The tuning made a very minute difference between both models: first one had an RMSE of 58.70 and the second had an RMSE of 58.52. 
+
+## Conclusion:
+I used my knowledge of machine learning to fulfill this task of finding a suitable prediction price for apartments accommodating 2-6 people.  I used Random Forest Algorithm as a benchmark whilst conducting OLS Linear Regression and using Lasso, CART and GBM algorithms in addition. 
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+result_4 %>% kbl(caption = "Horse Race of Models CV RSME") %>%
+  kable_classic(full_width = F, html_font = "Ariel") %>%
+  kable_styling(latex_options = c("striped", "hold_position"), position = "center") 
+```
+
+For the cross validated RMSE set, we can observe that GBM and Random Forest outperform the rest. This is followed by LASSO. The least favourable prediction model in this set is the simple OLS Linear Regression. In the holdout set it can be observed that there’s a reduction in overall RMSE values, which could partly be due to the different sample size. The best fit model is GBM (broad tuning) for the entire data set. In case we have high external validity, we can expect to make a 58.5 dollars error when using our model on live data. Whereas GBM does give a slightly better prediction, the advantage of using random forest algorithm is that variables can be studied in more depth with diagnostic tools. 
+
